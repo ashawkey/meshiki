@@ -12,7 +12,7 @@ jobs:
 
     environment:
       name: pypi
-      url: https://pypi.org/project/kiui/
+      url: https://pypi.org/project/meshiki/
     permissions:
       id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
 
