@@ -8,7 +8,7 @@ setup(
     name="meshiki",
     version="0.0.2",
     description="Unusual mesh processing tools",
-    long_description=open("README.md", encoding="utf-8").read(),
+    long_description=open("readme.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/ashawkey/meshiki",
     author="kiui",
