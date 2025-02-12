@@ -1,0 +1,16 @@
+.vscode
+__pycache__ 
+*.pyc
+build
+dist
+*.egg-info
+*.egg
+*.so
+*.obj
+*.glb
+*.ply
+*.pkl
+tmp_*
+data
+data_*
+videos

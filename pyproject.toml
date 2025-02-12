@@ -1,0 +1,9 @@
+[build-system]
+requires = [
+    "setuptools>=42",
+    "pybind11>=2.10.0",
+    "numpy>=1.19.0",
+    "kiui>=0.2.14",
+    "trimesh>=4.0.0",
+]
+build-backend = "setuptools.build_meta"
