@@ -5,9 +5,10 @@ A collection of unusual mesh processing algorithms.
 ## Install
 
 ```bash
-# from pypi
+# from pypi, will build extension at first time
+pip install meshiki
 
-# locally, will build extension at first time
+# locally
 cd meshiki
 pip install . 
 ```

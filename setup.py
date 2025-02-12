@@ -1,13 +1,22 @@
 import os
-from setuptools import setup
+from setuptools import setup, find_packages
 from pybind11.setup_helpers import Pybind11Extension, build_ext
 
 _src_path = os.path.dirname(os.path.abspath(__file__))
 
 setup(
     name="meshiki",
-    version="0.0.1",
-    description="Reverse Engineering of Meshes",
+    version="0.0.2",
+    description="Unusual mesh processing tools",
+    long_description=open("README.md", encoding="utf-8").read(),
+    long_description_content_type="text/markdown",
+    url="https://github.com/ashawkey/meshiki"
+    author="kiui",
+    packages=find_packages(),
+    include_package_data=True,
+    classifiers=[
+        "Programming Language :: Python :: 3",
+    ],
     ext_modules=[
         Pybind11Extension(
             name="_meshiki",
