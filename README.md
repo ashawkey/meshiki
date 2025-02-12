@@ -28,7 +28,7 @@ Our implementation is based on maximum weighted graph matching, and is usually b
 ```python
 from meshiki import Mesh
 
-mesh = Mesh('mesh.glb', verbose=False)
+mesh = Mesh.load('mesh.glb', verbose=False)
 mesh.quadrangulate()
 mesh.export('mesh.obj') # must use obj for quad faces
 ```
