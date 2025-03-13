@@ -19,6 +19,7 @@ PYBIND11_MODULE(_meshiki, m) {
         .def("quadrangulate", &Mesh::quadrangulate, py::arg("thresh_bihedral"), py::arg("thresh_convex"))
         .def("salient_point_sample", &Mesh::salient_point_sample, py::arg("num_samples"), py::arg("thresh_angle"))
         .def("uniform_point_sample", &Mesh::uniform_point_sample, py::arg("num_samples"))
+        .def("repair_face_orientation", &Mesh::repair_face_orientation)
         .def("export_mesh", &Mesh::export_mesh);
     
     // triangulate

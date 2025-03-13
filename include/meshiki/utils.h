@@ -90,14 +90,14 @@ tuple<vector<vector<float>>, vector<vector<int>>> merge_close_vertices(const vec
     using Octree = nanoflann::KDTreeSingleIndexAdaptor<nanoflann::L2_Adaptor<float, PointCloud<float>>, PointCloud<float>, 3>;
     
     pointcloud.pts.resize(verts_input.size());
-    for (int i = 0; i < verts_input.size(); i++) {
+    for (size_t i = 0; i < verts_input.size(); i++) {
         pointcloud.pts[i].x = verts_input[i][0];
         pointcloud.pts[i].y = verts_input[i][1];
         pointcloud.pts[i].z = verts_input[i][2];
     }
     Octree octree(3, pointcloud, {10});
 
-    for (int i = 0; i < verts_input.size(); i++) {
+    for (size_t i = 0; i < verts_input.size(); i++) {
 
         if (vmap.find(i) != vmap.end()) continue; // already merged
         

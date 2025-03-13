@@ -54,18 +54,34 @@ struct Vector3f {
     Vector3f() {}
     Vector3f(float x, float y, float z) : x(x), y(y), z(z) {}
     Vector3f(const Vertex& v) : x(v.x), y(v.y), z(v.z) {}
-    Vector3f(const Vertex& v1, const Vertex& v2) : x(v2.x - v1.x), y(v2.y - v1.y), z(v2.z - v1.z) {}
+    Vector3f(const Vertex& v1, const Vertex& v2) : x(v2.x - v1.x), y(v2.y - v1.y), z(v2.z - v1.z) {} // v1 --> v2
     Vector3f operator+(const Vector3f& v) const {
         return Vector3f(x + v.x, y + v.y, z + v.z);
+    }
+    Vector3f& operator+=(const Vector3f& v) {
+        x += v.x; y += v.y; z += v.z;
+        return *this;
     }
     Vector3f operator-(const Vector3f& v) const {
         return Vector3f(x - v.x, y - v.y, z - v.z);
     }
+    Vector3f& operator-=(const Vector3f& v) {
+        x -= v.x; y -= v.y; z -= v.z;
+        return *this;
+    }
     Vector3f operator*(float s) const {
         return Vector3f(x * s, y * s, z * s);
     }
+    Vector3f& operator*=(float s) {
+        x *= s; y *= s; z *= s;
+        return *this;
+    }
     Vector3f operator/(float s) const {
         return Vector3f(x / s, y / s, z / s);
+    }
+    Vector3f& operator/=(float s) {
+        x /= s; y /= s; z /= s;
+        return *this;
     }
     bool operator==(const Vector3f& v) const {
         return x == v.x && y == v.y && z == v.z;
@@ -162,12 +178,24 @@ struct Facet {
     Vector3f center; // mass center
     float area; // area
 
-    // flip the face orientation (only flip half edges)
+    // face normal
+    Vector3f normal() const {
+        Vector3f e1(*vertices[0], *vertices[1]);
+        Vector3f e2(*vertices[0], *vertices[2]);
+        return e1.cross(e2).normalize();
+    }
+
+    // flip the face orientation
     void flip() {
+        // flip half edge directions
         for (size_t i = 0; i < half_edges.size(); i++) {
             swap(half_edges[i]->s, half_edges[i]->e);
             swap(half_edges[i]->n, half_edges[i]->p);
             if (half_edges[i]->w != NULL) swap(half_edges[i]->v, half_edges[i]->w);
+        }
+        // reverse vertices
+        for (size_t i = 0; i < vertices.size() / 2; i++) {
+            swap(vertices[i], vertices[vertices.size() - i - 1]);
         }
     }
 
@@ -204,7 +232,6 @@ public:
     int num_edges = 0;
     int num_faces = 0;
     int num_components = 0;
-    bool non_manifold = false;
 
     // indicator for quad quality (will be set during initialization)
     float rect_error = 0;
@@ -212,6 +239,14 @@ public:
 
     // total surface area of all faces
     float total_area = 0;
+
+    // if watertight (edge-manifold and vertex-manifold, but we don't consider vertex-manifold, as isolated vertices should be cleaned in preprocessing)
+    map<int, bool> component_is_watertight; // per connected component
+    bool is_watertight = true; // the whole mesh
+
+    // component centers
+    map<int, Vector3f> component_centers;
+    map<int, vector<Facet*>> component_faces;
 
     // faces_input could contain mixed trig and quad. (quad assumes 4 vertices are in order)
     Mesh(vector<vector<float>> verts_input, vector<vector<int>> faces_input, bool clean = false, bool verbose = false) {
@@ -286,7 +321,7 @@ public:
                 } else {
                     // if this key has already matched two half edges, this mesh is not edge-manifold!
                     if (edge2halfedge[key] == NULL) {
-                        non_manifold = true;
+                        is_watertight = false;
                         // we can do nothing to fix it... treat it as a border edge
                         continue;
                     }
@@ -315,28 +350,13 @@ public:
         num_faces = faces.size();
         num_edges = edge2halfedge.size();
 
-        for (size_t i = 0; i < faces_input.size(); i++) {
-            Facet* f = faces[i];
-            for (int j = 0; j < int(f->half_edges.size()); j++) {
-                // boundary edges have no opposite half edge, and their start and end vertices are boundary vertices
-                if (f->half_edges[j]->o == NULL) {
-                    f->half_edges[j]->s->m = 1;
-                    f->half_edges[j]->e->m = 1;
-                    // if (verbose) cout << "[MESH] Mark boundary vertex for face " << f->i << " : " << f->half_edges[j]->s->i << " -- " << f->half_edges[j]->e->i << endl;
-                }
-            }
-            // sort half edges (this will disturb vertex-half-edge order, but we don't use index anyway)
-            sort(f->half_edges.begin(), f->half_edges.end(), [](const HalfEdge* e1, const HalfEdge* e2) { return *e1 < *e2; });
-        }
-
-        // sort faces using center
-        sort(faces.begin(), faces.end(), [](const Facet* f1, const Facet* f2) { return *f1 < *f2; });
-
-        // find connected components
+        // find connected components and fix face orientation
         for (size_t i = 0; i < faces_input.size(); i++) {
             Facet* f = faces[i];
             if (f->ic == -1) {
-                num_components++;
+                component_is_watertight[num_components] = true;
+                component_centers[num_components] = Vector3f(0, 0, 0);
+                component_faces[num_components] = vector<Facet*>();
                 // if (verbose) cout << "[MESH] find connected component " << num_components << endl;
                 // recursively mark all connected faces
                 queue<Facet*> q;
@@ -346,23 +366,64 @@ public:
                     q.pop();
                     if (f->ic != -1) continue;
                     f->ic = num_components;
-                    for (int j = 0; j < int(f->half_edges.size()); j++) {
+                    for (size_t j = 0; j < f->half_edges.size(); j++) {
                         HalfEdge* e = f->half_edges[j];
-                        if (e->o != NULL && e->o->t->ic == -1) {
-                            q.push(e->o->t);
+                        if (e->o != NULL) {
+                            if (e->o->t->ic == -1) {
+                                // push to queue
+                                q.push(e->o->t);
+                                // fix the face orientation (makes it align with the first face)
+                                if (e->s->i != e->o->e->i || e->e->i != e->o->s->i) {
+                                    e->o->t->flip();
+                                }
+                            }
+                        } else {
+                            component_is_watertight[num_components] = false;
                         }
                     }
+                    component_centers[num_components] += f->center;
+                    component_faces[num_components].push_back(f);
                 }
+                component_centers[num_components] /= component_faces[num_components].size();
+                // cout << "[MESH] component " << num_components << " has " << component_faces[num_components].size() << " faces, center is " << component_centers[num_components] << endl;
+                num_components++;
             }
         }
 
-        if (verbose) cout << "[MESH] V = " << num_vertices << ", E = " << num_edges << ", F = " << num_faces << ", C = " << num_components << ", manifold = " << (non_manifold ? "False" : "True") << endl;
+        if (verbose) cout << "[MESH] V = " << num_vertices << ", E = " << num_edges << ", F = " << num_faces << ", C = " << num_components << endl;
 
-        // sort faces again using connected component and center
+        // sort faces using connected component and center
         sort(faces.begin(), faces.end(), [](const Facet* f1, const Facet* f2) { return *f1 < *f2; });
 
-        // // reset face index
-        // for (size_t i = 0; i < faces.size(); i++) { faces[i]->i = i; }
+        // reset face index
+        for (size_t i = 0; i < faces.size(); i++) { faces[i]->i = i; }
+    }
+
+    // empirically repair face orientation
+    void repair_face_orientation() {
+        // for each component, we choose the furthest face from its center
+        for (int i = 0; i < num_components; i++) {
+            float max_dist = -1;
+            Facet* furthest_face = NULL;
+            for (size_t j = 0; j < component_faces[i].size(); j++) {
+                Facet* f = component_faces[i][j];
+                float dist = (f->center - component_centers[i]).norm();
+                if (dist > max_dist) {
+                    max_dist = dist;
+                    furthest_face = f;
+                }
+            }
+            // see if this face's orientation is correct
+            Vector3f normal = furthest_face->normal();
+            Vector3f dir = (furthest_face->center - component_centers[i]).normalize();
+            float dot = normal.dot(dir);
+            if (dot < 0) {
+                if (verbose) cout << "[MESH] flip face for component " << i << endl;
+                for (int j = 0; j < component_faces[i].size(); j++) {
+                    component_faces[i][j]->flip();
+                }
+            }
+        }
     }
 
     // trig-to-quad conversion (in-place)
@@ -372,6 +433,9 @@ public:
         int num_faces_ori = faces.size();
         num_quad = 0;
         rect_error = 0;
+
+        // reset face mask
+        for (int i = 0; i < faces.size(); i++) { faces[i]->m = 0; }
 
         auto merge_func = [&](HalfEdge* e) -> Facet* {
             // we will merge e->t and e->o->t into a quad

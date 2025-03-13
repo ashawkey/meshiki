@@ -142,18 +142,21 @@ def fps(points, num_points, start_idx=None, backend: Literal['naive', 'kdtree', 
 
 class Mesh:
     def __init__(self, vertices, faces, clean=False, verbose=False):
-        self.vertices = vertices
-        self.faces = faces
+        self.impl = _meshiki.Mesh(vertices, faces, clean, verbose)
+
+        # copy back to self
+        self.vertices, self.faces = self.impl.export_mesh()
+        self.vertices = np.asarray(self.vertices)
 
         # count face
         self.face_cnt = {}
-        for face in faces:
+        for face in self.faces:
             if len(face) not in self.face_cnt:
                 self.face_cnt[len(face)] = 0
             self.face_cnt[len(face)] += 1
+
         self.trig_only = 3 in self.face_cnt and len(self.face_cnt) == 1
 
-        self.impl = _meshiki.Mesh(vertices, faces, clean, verbose)
     
     @staticmethod
     def load(path, clean=True, verbose=False):
@@ -193,6 +196,12 @@ class Mesh:
         samples = self.impl.uniform_point_sample(num_points)
         samples = np.asarray(samples)
         return samples
+    
+    def repair_face_orientation(self):
+        self.impl.repair_face_orientation()
+        # copy back to self
+        self.vertices, self.faces = self.impl.export_mesh()
+        self.vertices = np.asarray(self.vertices)
         
     def export(self, path):
         write_mesh(path, self.vertices, self.faces)
