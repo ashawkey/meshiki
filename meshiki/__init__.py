@@ -179,10 +179,16 @@ class Mesh:
     def num_components(self):
         return self.impl.num_components
     
-    def quadrangulate(self, thresh_bihedral=45, thresh_convex=175):
+    def quadrangulate(self, thresh_bihedral=45, thresh_convex=185):
         assert self.trig_only, "Only support quadrangulateing pure trimesh!"
         # run quadrangulation
         self.impl.quadrangulate(thresh_bihedral, thresh_convex)
+        # copy back to self
+        self.vertices, self.faces = self.impl.export_mesh()
+        self.vertices = np.asarray(self.vertices)
+    
+    def polygonize(self, thresh_bihedral=0, thresh_convex=180, max_round=100):
+        self.impl.polygonize(thresh_bihedral, thresh_convex, max_round)
         # copy back to self
         self.vertices, self.faces = self.impl.export_mesh()
         self.vertices = np.asarray(self.vertices)
