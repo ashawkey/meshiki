@@ -187,7 +187,7 @@ class Mesh:
         self.vertices, self.faces = self.impl.export_mesh()
         self.vertices = np.asarray(self.vertices)
     
-    def polygonize(self, thresh_bihedral=0, thresh_convex=180, max_round=100):
+    def polygonize(self, thresh_bihedral=1, thresh_convex=181, max_round=100):
         self.impl.polygonize(thresh_bihedral, thresh_convex, max_round)
         # copy back to self
         self.vertices, self.faces = self.impl.export_mesh()

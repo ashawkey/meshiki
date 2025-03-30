@@ -3,6 +3,7 @@
 #include <iostream>
 #include <vector>
 #include <map>
+#include <set>
 #include <queue>
 #include <algorithm>
 #include <cmath>
@@ -25,9 +26,8 @@ struct Vertex {
     int i = -1; // index
     int m = 0; // visited mark
 
-    // vertex degree
-    int degree_in = 0; // number of half edges incident to this vertex
-    int degree_out = 0; // number of half edges outgoing from this vertex
+    // neighbor vertices
+    set<Vertex*> neighbors;
     
     Vertex() {}
     Vertex(float x, float y, float z, int i=-1) : x(x), y(y), z(z), i(i) {}
@@ -127,7 +127,7 @@ inline float get_trig_area(const Vertex& v1, const Vertex& v2, const Vertex& v3)
     return 0.5 * (e1.cross(e2)).norm();
 }
 
-/* HalfEdeg structure for arbitrary polygonal face
+/* HalfEdge structure for arbitrary polygonal face
 
 Triangle case (c is the halfedge):
               v
@@ -340,14 +340,14 @@ public:
                 if (num_edges == 3) {
                     // trig
                     e->v = verts[f_in[j]];
-                    e->s = verts[f_in[(j + 1) % 3]]; verts[f_in[(j + 1) % 3]]->degree_out++;
-                    e->e = verts[f_in[(j + 2) % 3]]; verts[f_in[(j + 2) % 3]]->degree_in++;
+                    e->s = verts[f_in[(j + 1) % 3]];
+                    e->e = verts[f_in[(j + 2) % 3]];
                     e->angle = angle_between(Vector3f(*e->v, *e->s), Vector3f(*e->v, *e->e));
                 } else if (num_edges == 4) {
                     // quad
                     e->v = verts[f_in[j]];
-                    e->s = verts[f_in[(j + 1) % 4]]; verts[f_in[(j + 1) % 4]]->degree_out++;
-                    e->e = verts[f_in[(j + 2) % 4]]; verts[f_in[(j + 2) % 4]]->degree_in++;
+                    e->s = verts[f_in[(j + 1) % 4]];
+                    e->e = verts[f_in[(j + 2) % 4]];
                     e->w = verts[f_in[(j + 3) % 4]];
                     e->angle = angle_between(Vector3f(*e->v, *e->s), Vector3f(*e->v, *e->w));
                     // update quad weight
@@ -355,10 +355,14 @@ public:
                 } else {
                     // polygon
                     e->v = verts[f_in[j]];
-                    e->s = verts[f_in[(j + 1) % num_edges]]; verts[f_in[(j + 1) % num_edges]]->degree_out++;
-                    e->e = verts[f_in[(j + 2) % num_edges]]; verts[f_in[(j + 2) % num_edges]]->degree_in++;
+                    e->s = verts[f_in[(j + 1) % num_edges]];
+                    e->e = verts[f_in[(j + 2) % num_edges]];
                     // no angle defined for polygon
                 }
+                // update neighbor vertices
+                e->s->neighbors.insert(e->e);
+                e->e->neighbors.insert(e->s);
+                // update face
                 f->vertices.push_back(verts[f_in[j]]);
                 f->half_edges.push_back(e);
             }
@@ -539,9 +543,9 @@ public:
             e->t->m = 2;
             e->o->t->m = 2;
 
-            // update vertex degree
-            e->s->degree_out--; e->s->degree_in--;
-            e->e->degree_out--; e->e->degree_in--;
+            // update vertex    
+            e->s->neighbors.erase(e->e);
+            e->e->neighbors.erase(e->s);
 
             // update quad stat
             float cur_quad_angle = (abs(90 - e1->angle) + abs(90 - e2->angle) + abs(90 - e3->angle) + abs(90 - e4->angle)) / 4;
@@ -704,12 +708,44 @@ public:
             q->i = faces.size();
             q->ic = e->t->ic;
 
-            // modify vertices
-            e->s->degree_out--; e->s->degree_in--;
-            e->e->degree_out--; e->e->degree_in--;
-
-            // eliminate vertices if they are in the straight line
-            if (e->s->degree_in <= 2 && e->s->degree_out <= 2 &&
+            /* find the longest chain that contains e, we need to delete all the intermediate vertices (A, ...)
+            \                    /
+             \  el    e     er  /
+              S -- A ---...--- E
+             /                  \
+            /                    \
+            */
+            HalfEdge* el = e;
+            while (el->s->neighbors.size() == 2) {
+                el->s->m = 2; // mark vert to delete
+                el = el->p;
+            }
+            HalfEdge* er = e;
+            while (er->e->neighbors.size() == 2) {
+                er->e->m = 2; // mark vert to delete
+                er = er->n;
+            }
+            if (el != e) {
+                e->s = el->s;
+                e->p = el->p; el->p->n = e;
+                e->o->e = el->s;
+                e->o->n = el->o->n; el->o->n->p = e->o;
+                e->s->neighbors.erase(el->e);
+            } else {
+                e->s->neighbors.erase(e->e);
+            }
+            if (er != e) {
+                e->e = er->e;
+                e->n = er->n; er->n->p = e;
+                e->o->s = er->e;
+                e->o->p = er->o->p; er->o->p->n = e->o;
+                e->e->neighbors.erase(er->s);
+            } else {
+                e->e->neighbors.erase(e->s);
+            }
+            
+            // eliminate vertices if they are in a chain
+            if (e->s->neighbors.size() == 2 &&
                 angle_between(Vector3f(*e->s, *e->p->s), Vector3f(*e->s, *e->o->n->e)) >= 175
             ) {
                 cout << "DEBUG: delete vertex " << e->s->i << endl;
@@ -719,6 +755,8 @@ public:
                 e->p->e = e->o->n->e;
                 e->p->n = e->o->n->n;
                 e->o->n->n->p = e->p;
+                e->p->s->neighbors.erase(e->s); e->p->s->neighbors.insert(e->o->n->e);
+                e->o->n->e->neighbors.erase(e->s); e->o->n->e->neighbors.insert(e->p->s);
                 if (e->p->o != NULL) {
                     e->p->o->s = e->o->n->e;
                     e->p->o->p = e->o->n->o->p;
@@ -737,7 +775,7 @@ public:
                 e->o->n->p = e->p;
             }
 
-            if (e->e->degree_in <= 2 && e->e->degree_out <= 2 &&
+            if (e->e->neighbors.size() == 2 &&
                 angle_between(Vector3f(*e->e, *e->n->e), Vector3f(*e->e, *e->o->p->s)) >= 175
             ) {
                 cout << "DEBUG: delete vertex " << e->e->i << endl;
@@ -747,6 +785,8 @@ public:
                 e->n->s = e->o->p->s;
                 e->n->p = e->o->p->p;
                 e->o->p->p->n = e->n;
+                e->n->e->neighbors.erase(e->e); e->n->e->neighbors.insert(e->o->p->s);
+                e->o->p->s->neighbors.erase(e->e); e->o->p->s->neighbors.insert(e->n->e);
                 if (e->n->o != NULL) {
                     e->n->o->e = e->o->p->s;
                     e->n->o->n = e->o->p->o->n;

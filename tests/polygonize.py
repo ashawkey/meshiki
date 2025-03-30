@@ -18,5 +18,5 @@ opt = parser.parse_args()
 
 # mesh
 mesh = Mesh.load(opt.mesh, verbose=opt.verbose)
-mesh.polygonize(thresh_bihedral=10, thresh_convex=355, max_round=100)
+mesh.polygonize(thresh_bihedral=1, thresh_convex=181, max_round=10)
 mesh.export(opt.output)
