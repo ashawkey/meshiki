@@ -228,3 +228,30 @@ vector<int> random_subsample(int total, int num_samples, bool repeat=false) {
 
     return samples;
 }
+
+
+struct DisjointSet {
+    vector<int> parent;
+    
+    DisjointSet(int n) {
+        clear(n);
+    }
+
+    void clear(int n) {
+        parent.resize(n);
+        for (int i = 0; i < n; i++) { parent[i] = i; }
+    }
+
+    int find(int x) {
+        if (parent[x] != x) {
+            parent[x] = find(parent[x]);
+        }
+        return parent[x];
+    }
+
+    void merge(int x, int y) {
+        int rootX = find(x);
+        int rootY = find(y);
+        parent[rootX] = rootY;
+    }
+};

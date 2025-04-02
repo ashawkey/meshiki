@@ -21,6 +21,7 @@ PYBIND11_MODULE(_meshiki, m) {
         .def("salient_point_sample", &Mesh::salient_point_sample, py::arg("num_samples"), py::arg("thresh_angle"))
         .def("uniform_point_sample", &Mesh::uniform_point_sample, py::arg("num_samples"))
         .def("repair_face_orientation", &Mesh::repair_face_orientation)
+        .def("explode", &Mesh::explode, py::arg("delta"))
         .def("export_mesh", &Mesh::export_mesh);
     
     // triangulate

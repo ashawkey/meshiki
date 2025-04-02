@@ -140,13 +140,11 @@ def fps(points, num_points, start_idx=None, backend: Literal['naive', 'kdtree', 
     samples = np.asarray(samples)
     return samples
 
+
 class Mesh:
     def __init__(self, vertices, faces, clean=False, verbose=False):
         self.impl = _meshiki.Mesh(vertices, faces, clean, verbose)
-
-        # copy back to self
-        self.vertices, self.faces = self.impl.export_mesh()
-        self.vertices = np.asarray(self.vertices)
+        self.sync_impl()
 
         # count face
         self.face_cnt = {}
@@ -157,12 +155,21 @@ class Mesh:
 
         self.trig_only = 3 in self.face_cnt and len(self.face_cnt) == 1
 
+    def sync_impl(self):
+        # copy back to self
+        self.vertices, self.faces = self.impl.export_mesh()
+        self.vertices = np.asarray(self.vertices)
+        import kiui; kiui.lo(self.vertices)
     
     @staticmethod
-    def load(path, clean=True, verbose=False):
-        vertices, faces = load_mesh(path)
+    def load(path, clean=True, bound=0.99, verbose=False):
+        vertices, faces = load_mesh(path, bound=bound, clean=clean)
         return Mesh(vertices, faces, clean, verbose)
-    
+
+    @property
+    def verts(self):  # alias for vertices
+        return self.vertices
+
     @property
     def num_quad(self):
         return self.impl.num_quad
@@ -183,15 +190,11 @@ class Mesh:
         assert self.trig_only, "Only support quadrangulateing pure trimesh!"
         # run quadrangulation
         self.impl.quadrangulate(thresh_bihedral, thresh_convex)
-        # copy back to self
-        self.vertices, self.faces = self.impl.export_mesh()
-        self.vertices = np.asarray(self.vertices)
+        self.sync_impl()
     
     def polygonize(self, thresh_bihedral=1, thresh_convex=181, max_round=100):
         self.impl.polygonize(thresh_bihedral, thresh_convex, max_round)
-        # copy back to self
-        self.vertices, self.faces = self.impl.export_mesh()
-        self.vertices = np.asarray(self.vertices)
+        self.sync_impl()
 
     def salient_point_sample(self, num_points, thresh_bihedral=30):
         samples = self.impl.salient_point_sample(num_points, thresh_bihedral)
@@ -205,9 +208,11 @@ class Mesh:
     
     def repair_face_orientation(self):
         self.impl.repair_face_orientation()
-        # copy back to self
-        self.vertices, self.faces = self.impl.export_mesh()
-        self.vertices = np.asarray(self.vertices)
+        self.sync_impl()
+    
+    def explode(self, delta=0.1):
+        self.impl.explode(delta)
+        self.sync_impl()
         
     def export(self, path):
         write_mesh(path, self.vertices, self.faces)

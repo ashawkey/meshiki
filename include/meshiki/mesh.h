@@ -93,6 +93,12 @@ struct Vector3f {
         // y-z-x order
         return y < v.y || (y == v.y && z < v.z) || (y == v.y && z == v.z && x < v.x);
     }
+    float operator[](int i) const {
+        return i == 0 ? x : (i == 1 ? y : z);
+    }
+    float& operator[](int i) {
+        return i == 0 ? x : (i == 1 ? y : z);
+    }
     Vector3f cross(const Vector3f& v) const {
         return Vector3f(y * v.z - z * v.y, z * v.x - x * v.z, x * v.y - y * v.x);
     }
@@ -107,10 +113,18 @@ struct Vector3f {
         return Vector3f(x / n, y / n, z / n);
     }
     friend ostream& operator<<(ostream &os, const Vector3f &v) {
-        os << "Vector3f :(" << v.x << ", " << v.y << ", " << v.z << ")";
+        os << "(" << v.x << ", " << v.y << ", " << v.z << ")";
         return os;
     }
 };
+
+Vector3f min(const Vector3f& a, const Vector3f& b) {
+    return Vector3f(min(a.x, b.x), min(a.y, b.y), min(a.z, b.z));
+}
+
+Vector3f max(const Vector3f& a, const Vector3f& b) {
+    return Vector3f(max(a.x, b.x), max(a.y, b.y), max(a.z, b.z));
+}
 
 inline float angle_between(Vector3f a, Vector3f b) {
     // Normalize vectors and compute dot product
@@ -189,6 +203,7 @@ struct HalfEdge {
 
     float angle = 0; // angle at opposite vertex v (trig-or-quad-only)
     int i = -1; // index inside the face
+    int m = 0; // visited mark
 
     bool is_quad() const { return w != NULL; }
 
@@ -200,10 +215,15 @@ struct HalfEdge {
         return *s < *e ? Vector3f(*s) : Vector3f(*e);
     }
 
+    Vector3f upper_point() const {
+        return *s < *e ? Vector3f(*e) : Vector3f(*s);
+    }
+
     // comparison operator
     bool operator<(const HalfEdge& e) const {
-        // boundary edge first
-        if (o == NULL) return true;
+        // boundary edge first, otherwise by lower point
+        if (o == NULL && e.o == NULL) return lower_point() < e.lower_point();
+        else if (o == NULL) return true;
         else if (e.o == NULL) return false;
         else return lower_point() < e.lower_point();
     }
@@ -270,9 +290,392 @@ struct Facet {
 
 // ostream for HalfEdge, since we also use definition of Facet, it must be defined after both classes...
 ostream& operator<<(ostream &os, const HalfEdge &ee) {
-    os << "HalfEdge f " << ee.t->i << " : v " << ee.s->i << " --> v " << ee.e->i ;
+    os << "HalfEdge <f " << ee.t->i << " : v " << ee.s->i << " --> v " << ee.e->i << ">";
     return os;
 }
+
+struct BoundingBox {
+    Vector3f mn = Vector3f(INF, INF, INF);
+    Vector3f mx = Vector3f(-INF, -INF, -INF);
+
+    Vector3f size() const {
+        return mx - mn;
+    }
+
+    float extent() const {
+        return (mx - mn).norm();
+    }
+
+    Vector3f center() const {
+        return (mn + mx) / 2;
+    }
+
+    void translate(const Vector3f& v) {
+        mn = mn + v;
+        mx = mx + v;
+    }
+
+    float volume() const {
+        Vector3f size = mx - mn;
+        return size.x * size.y * size.z;
+    }
+
+    void expand(const Vector3f& v) {
+        mn = min(mn, v);
+        mx = max(mx, v);
+    }
+
+    void expand(const Vertex* v) {
+        expand(Vector3f(*v));
+    }
+
+    void expand(const Facet* f) {
+        for (size_t i = 0; i < f->vertices.size(); i++) {
+            expand(f->vertices[i]);
+        }
+    }
+
+    void expand(const BoundingBox& other) {
+        mn = min(mn, other.mn);
+        mx = max(mx, other.mx);
+    }
+
+    bool overlap(const BoundingBox& other, float thresh = 0) const {
+        // thresh can adjust the overlap tolerance, a positive thresh can be used for coarse contact detection
+        return (mn.x - other.mx.x) <= thresh && (other.mn.x - mx.x) <= thresh &&
+               (mn.y - other.mx.y) <= thresh && (other.mn.y - mx.y) <= thresh &&
+               (mn.z - other.mx.z) <= thresh && (other.mn.z - mx.z) <= thresh;
+    }
+};
+
+// simple BVH implementation
+struct BVHNode {
+    BoundingBox bbox;
+    BVHNode* left = NULL;
+    BVHNode* right = NULL;
+    vector<Facet*> faces; // only at BVH leaf node (trig-only)
+
+    // move the whole BVH tree's bbox
+    void translate(const Vector3f& v) {
+        bbox.translate(v);
+        if (left) left->translate(v);
+        if (right) right->translate(v);
+    }
+
+    ~BVHNode() {
+        if (left) delete left;
+        if (right) delete right;
+    }
+};
+
+BVHNode* build_bvh(vector<Facet*>& faces, int depth = 0, int max_depth = 16, int min_leaf_size = 4) {
+    
+    if (faces.empty()) return NULL;
+
+    BVHNode* node = new BVHNode();
+    for (size_t i = 0; i < faces.size(); i++) {
+        node->bbox.expand(faces[i]);
+    }
+
+    if (faces.size() <= min_leaf_size || depth >= max_depth) {
+        node->faces = faces; // copy
+        return node;
+    }
+
+    // find longest axis
+    Vector3f size = node->bbox.size();
+    int longest_axis = 0;
+    if (size.y > size.x) longest_axis = 1;
+    if (size.z > size.y) longest_axis = 2;
+
+    // split the faces into two groups
+    sort(faces.begin(), faces.end(), [&](const Facet* a, const Facet* b) {
+        return a->center[longest_axis] < b->center[longest_axis];
+    });
+
+    // find the median
+    int median = faces.size() / 2;
+    vector<Facet*> left_faces(faces.begin(), faces.begin() + median);
+    vector<Facet*> right_faces(faces.begin() + median, faces.end());
+
+    // recursively build the BVH
+    node->left = build_bvh(left_faces, depth + 1, max_depth, min_leaf_size);
+    node->right = build_bvh(right_faces, depth + 1, max_depth, min_leaf_size);
+
+    return node;
+}
+
+
+// Helper function to compute intervals for the line-triangle intersection
+bool compute_intervals(const Vector3f& v0, const Vector3f& v1, const Vector3f& v2, 
+                      float d0, float d1, float d2, 
+                      const Vector3f& line_dir, float intervals[2]) {
+    int count = 0;
+    
+    // Check each edge for intersection with the plane
+    if ((d0 * d1) <= 0) {
+        // Edge v0-v1 intersects the plane
+        float t = d0 / (d0 - d1);
+        Vector3f intersection = v0 + (v1 - v0) * t;
+        // Project onto the line direction to get the parameter
+        intervals[count++] = line_dir.dot(intersection);
+    }
+    
+    if ((d0 * d2) <= 0) {
+        // Edge v0-v2 intersects the plane
+        float t = d0 / (d0 - d2);
+        Vector3f intersection = v0 + (v2 - v0) * t;
+        intervals[count++] = line_dir.dot(intersection);
+    }
+    
+    if ((d1 * d2) <= 0 && count < 2) {
+        // Edge v1-v2 intersects the plane
+        float t = d1 / (d1 - d2);
+        Vector3f intersection = v1 + (v2 - v1) * t;
+        intervals[count++] = line_dir.dot(intersection);
+    }
+    
+    // Sort the intervals
+    if (count == 2 && intervals[0] > intervals[1]) {
+        swap(intervals[0], intervals[1]);
+    }
+    
+    return count == 2;
+}
+
+// Helper function to check if an edge separates triangle points
+bool edge_separation_test(const pair<float, float>& e1, const pair<float, float>& e2, 
+                         const pair<float, float>& p1, const pair<float, float>& p2, const pair<float, float>& p3) {
+    // Edge normal (perpendicular to the edge, pointing outward)
+    float nx = -(e2.second - e1.second);
+    float ny = e2.first - e1.first;
+    
+    // Check which side of the edge each point is on
+    float d1 = nx * (p1.first - e1.first) + ny * (p1.second - e1.second);
+    float d2 = nx * (p2.first - e1.first) + ny * (p2.second - e1.second);
+    float d3 = nx * (p3.first - e1.first) + ny * (p3.second - e1.second);
+    
+    // If all points are on the same side, and it's the opposite side from the triangle containing the edge,
+    // then this edge separates the triangles
+    if ((d1 >= 0 && d2 >= 0 && d3 >= 0) || (d1 <= 0 && d2 <= 0 && d3 <= 0)) {
+        return false; // Edge separates
+    }
+    
+    return true; // Edge does not separate
+}
+
+// Helper function for the 2D separating axis test
+bool edge_separates(const pair<float, float>& a0, const pair<float, float>& a1, const pair<float, float>& a2,
+                   const pair<float, float>& b0, const pair<float, float>& b1, const pair<float, float>& b2) {
+    // Check each edge of triangle A
+    if (!edge_separation_test(a0, a1, b0, b1, b2)) return false;
+    if (!edge_separation_test(a1, a2, b0, b1, b2)) return false;
+    if (!edge_separation_test(a2, a0, b0, b1, b2)) return false;
+    
+    return true;
+}
+
+// Helper function for 2D triangle overlap test (for coplanar triangles)
+bool triangle_overlap_2d(float ax0, float ay0, float ax1, float ay1, float ax2, float ay2,
+                        float bx0, float by0, float bx1, float by1, float bx2, float by2) {
+    // Check if any edge of triangle A separates triangle B
+    if (!edge_separates({ax0, ay0}, {ax1, ay1}, {ax2, ay2}, {bx0, by0}, {bx1, by1}, {bx2, by2})) {
+        return false;
+    }
+    
+    // Check if any edge of triangle B separates triangle A
+    if (!edge_separates({bx0, by0}, {bx1, by1}, {bx2, by2}, {ax0, ay0}, {ax1, ay1}, {ax2, ay2})) {
+        return false;
+    }
+    
+    // No separating edge found, triangles overlap
+    return true;
+}
+
+bool intersect_face(const Facet* a, const Facet* b) {
+    // For efficiency, quickly check if bounding boxes overlap
+    Vector3f min_a(INF, INF, INF), max_a(-INF, -INF, -INF);
+    Vector3f min_b(INF, INF, INF), max_b(-INF, -INF, -INF);
+    
+    // Compute bounding boxes
+    for (const Vertex* v : a->vertices) {
+        min_a = min(min_a, Vector3f(*v));
+        max_a = max(max_a, Vector3f(*v));
+    }
+    
+    for (const Vertex* v : b->vertices) {
+        min_b = min(min_b, Vector3f(*v));
+        max_b = max(max_b, Vector3f(*v));
+    }
+    
+    // Check if bounding boxes don't overlap
+    if (max_a.x < min_b.x || max_b.x < min_a.x ||
+        max_a.y < min_b.y || max_b.y < min_a.y ||
+        max_a.z < min_b.z || max_b.z < min_a.z) {
+        return false;
+    }
+    
+    // We only handle triangles for the intersection test
+    if (a->vertices.size() != 3 || b->vertices.size() != 3) {
+        // For non-triangular faces, we would need to triangulate them first
+        // or use a different approach. For now, return false or implement triangulation.
+        return false;
+    }
+    
+    // Extract triangle vertices
+    const Vector3f a0(*a->vertices[0]);
+    const Vector3f a1(*a->vertices[1]);
+    const Vector3f a2(*a->vertices[2]);
+    
+    const Vector3f b0(*b->vertices[0]);
+    const Vector3f b1(*b->vertices[1]);
+    const Vector3f b2(*b->vertices[2]);
+    
+    // Compute triangle A's normal
+    Vector3f edge1_a(a1.x - a0.x, a1.y - a0.y, a1.z - a0.z);
+    Vector3f edge2_a(a2.x - a0.x, a2.y - a0.y, a2.z - a0.z);
+    Vector3f normal_a = edge1_a.cross(edge2_a).normalize();
+    
+    // Compute signed distances from triangle B's vertices to triangle A's plane
+    float dist_b0 = normal_a.dot(b0 - a0);
+    float dist_b1 = normal_a.dot(b1 - a0);
+    float dist_b2 = normal_a.dot(b2 - a0);
+    
+    // If all vertices of B are on the same side of A's plane, no intersection
+    if ((dist_b0 > 0 && dist_b1 > 0 && dist_b2 > 0) || 
+        (dist_b0 < 0 && dist_b1 < 0 && dist_b2 < 0)) {
+        return false;
+    }
+    
+    // Compute triangle B's normal
+    Vector3f edge1_b(b1.x - b0.x, b1.y - b0.y, b1.z - b0.z);
+    Vector3f edge2_b(b2.x - b0.x, b2.y - b0.y, b2.z - b0.z);
+    Vector3f normal_b = edge1_b.cross(edge2_b).normalize();
+    
+    // Compute signed distances from triangle A's vertices to triangle B's plane
+    float dist_a0 = normal_b.dot(a0 - b0);
+    float dist_a1 = normal_b.dot(a1 - b0);
+    float dist_a2 = normal_b.dot(a2 - b0);
+    
+    // If all vertices of A are on the same side of B's plane, no intersection
+    if ((dist_a0 > 0 && dist_a1 > 0 && dist_a2 > 0) || 
+        (dist_a0 < 0 && dist_a1 < 0 && dist_a2 < 0)) {
+        return false;
+    }
+    
+    // Compute the direction of the intersection line
+    Vector3f intersection_line = normal_a.cross(normal_b).normalize();
+    
+    // Check if intersection line is valid (normals aren't parallel)
+    if (intersection_line.norm() < 1e-6) {
+        // Triangles are coplanar - need special handling
+        // For coplanar triangles, we check if projected triangles in 2D overlap
+        // We can pick the axis with the largest normal component to project onto
+        int axis = 0;
+        float max_component = fabs(normal_a.x);
+        if (fabs(normal_a.y) > max_component) {
+            axis = 1;
+            max_component = fabs(normal_a.y);
+        }
+        if (fabs(normal_a.z) > max_component) {
+            axis = 2;
+        }
+        
+        // Project onto the plane defined by the axis
+        int axis1 = (axis + 1) % 3;
+        int axis2 = (axis + 2) % 3;
+        
+        // Use 2D triangle-triangle overlap test
+        return triangle_overlap_2d(
+            a0[axis1], a0[axis2], a1[axis1], a1[axis2], a2[axis1], a2[axis2],
+            b0[axis1], b0[axis2], b1[axis1], b1[axis2], b2[axis1], b2[axis2]
+        );
+    }
+    
+    // Compute the intervals where the planes intersect the triangles
+    float t_a[2], t_b[2];
+    if (!compute_intervals(a0, a1, a2, dist_a0, dist_a1, dist_a2, intersection_line, t_a) ||
+        !compute_intervals(b0, b1, b2, dist_b0, dist_b1, dist_b2, intersection_line, t_b)) {
+        return false;
+    }
+    
+    // Check if the intervals overlap
+    if (t_a[0] > t_b[1] || t_b[0] > t_a[1]) {
+        return false;
+    }
+    
+    // Intervals overlap, triangles intersect
+    return true;
+}
+
+
+
+bool intersect_bvh(const BVHNode* a, const BVHNode* b) {
+    if (!a || !b || !a->bbox.overlap(b->bbox)) return false;
+
+    if (!a->left && !a->right && !b->left && !b->right) {
+        // both are leaf nodes
+        for (const auto& fa : a->faces) {
+            for (const auto& fb : b->faces) {
+                if (intersect_face(fa, fb)) return true;
+            }
+        }
+        return false;
+    }
+
+    // recursively test children
+    if (a->left && intersect_bvh(a->left, b)) return true;
+    if (a->right && intersect_bvh(a->right, b)) return true;
+    if (b->left && intersect_bvh(a, b->left)) return true;
+    if (b->right && intersect_bvh(a, b->right)) return true;
+
+    return false;
+}
+
+
+struct BoundaryLoop {
+    // a BoundaryLoop is a set of half edges without opposite half edges
+    // if a mesh is not watertight, it must have one or more boundary loops
+    vector<HalfEdge*> edges;
+    vector<Vector3f> points;
+
+    // find out a whole boundary loop given an edge on it
+    void build(HalfEdge* e) {
+        edges.clear();
+        points.clear();
+
+        edges.push_back(e);
+        points.push_back(Vector3f(*e->s));
+        HalfEdge* cur = e;
+        while (true) {
+            HalfEdge* next = cur->n;
+            while (next->o != NULL) {
+                next = next->o->n;
+            }
+            if (next == e) break;
+            edges.push_back(next);
+            points.push_back(Vector3f(*next->s));
+            cur = next;
+        }
+
+        // sort points
+        sort(points.begin(), points.end());
+    }    
+};
+
+
+// detect if two boundary loops may connect (share some common edges)
+bool boundary_may_connect(const BoundaryLoop& a, const BoundaryLoop& b, float thresh = 1e-6) {
+    // count how many points are shared
+    int count = 0;
+    for (size_t i = 0; i < a.points.size(); i++) {
+        for (size_t j = 0; j < b.points.size(); j++) {
+            if ((a.points[i] - b.points[j]).norm() < thresh) count++;
+        }
+    }
+    return count >= 2; // at least share 2 points (e.g., an edge of a rectangle)
+}
+    
 
 class Mesh {
 public:
@@ -293,16 +696,25 @@ public:
     float rect_error = 0;
     int num_quad = 0;
 
+    // bvh
+    BVHNode* bvh = NULL;
+
     // total surface area of all faces
     float total_area = 0;
 
-    // if watertight (edge-manifold and vertex-manifold, but we don't consider vertex-manifold, as isolated vertices should be cleaned in preprocessing)
-    map<int, bool> component_is_watertight; // per connected component
-    bool is_watertight = true; // the whole mesh
+    // if edge-manifold
+    bool is_edge_manifold = true;
 
-    // component centers
-    map<int, Vector3f> component_centers;
+    // if watertight
+    bool is_watertight = true; // the whole mesh
+    map<int, bool> component_is_watertight; // per connected component
+
+    // connected components
     map<int, vector<Facet*>> component_faces;
+    map<int, BVHNode*> component_bvhs;
+
+    // boundaries
+    map<int, vector<BoundaryLoop>> component_boundaries;
 
     // faces_input could contain mixed trig and quad. (quad assumes 4 vertices are in order)
     Mesh(vector<vector<float>> verts_input, vector<vector<int>> faces_input, bool clean = false, bool verbose = false) {
@@ -317,13 +729,12 @@ public:
             faces_input = move(faces_clean);
         }
 
-        // discretize verts (assume in [-1, 1], we won't do error handling in cpp!)
+        // verts (assume in [-1, 1], we won't do error handling in cpp!)
         for (size_t i = 0; i < verts_input.size(); i++) {
             Vertex* v = new Vertex(verts_input[i][0], verts_input[i][1], verts_input[i][2], i);
             verts.push_back(v);
         }
         num_verts = verts.size();
-       
         // build face and edge
         map<pair<int, int>, HalfEdge*> edge2halfedge; // to hold twin half edge
         for (size_t i = 0; i < faces_input.size(); i++) {
@@ -389,9 +800,9 @@ public:
                 if (edge2halfedge.find(key) == edge2halfedge.end()) {
                     edge2halfedge[key] = e;
                 } else {
-                    // if this key has already matched two half_edges, this mesh is not edge-manifold!
+                    // if this key has already matched two half_edges, this mesh is not edge-manifold (an edge is shared by three or more faces)!
                     if (edge2halfedge[key] == NULL) {
-                        is_watertight = false;
+                        is_edge_manifold = false;
                         // we can do nothing to fix it... treat it as a border edge
                         continue;
                     }
@@ -416,7 +827,6 @@ public:
             Facet* f = faces[i];
             if (f->ic == -1) {
                 component_is_watertight[num_components] = true;
-                component_centers[num_components] = Vector3f(0, 0, 0);
                 component_faces[num_components] = vector<Facet*>();
                 // if (verbose) cout << "[MESH] find connected component " << num_components << endl;
                 // recursively mark all connected faces
@@ -440,24 +850,169 @@ public:
                             }
                         } else {
                             component_is_watertight[num_components] = false;
+                            is_watertight = false;
+                            // find the boundary that contains this edge if it's not visited
+                            if (e->m == 0) {
+                                BoundaryLoop loop;
+                                loop.build(e);
+                                // mark all edges in this loop
+                                for (size_t j = 0; j < loop.edges.size(); j++) {
+                                    loop.edges[j]->m = 1;
+                                }
+                                component_boundaries[num_components].push_back(loop);
+                            }
                         }
                     }
-                    component_centers[num_components] += f->center;
                     component_faces[num_components].push_back(f);
                 }
-                component_centers[num_components] /= component_faces[num_components].size();
-                // cout << "[MESH] component " << num_components << " has " << component_faces[num_components].size() << " faces, center is " << component_centers[num_components] << endl;
                 num_components++;
             }
         }
 
-        if (verbose) cout << "[MESH] V = " << num_verts << ", E = " << num_edges << ", F = " << num_faces << ", C = " << num_components << endl;
+        if (verbose) {
+            cout << "[MESH] Vertices = " << num_verts << ", Edges = " << num_edges << ", Faces = " << num_faces << ", Components = " << num_components << ", Watertight = " << (is_watertight ? "true" : "false") << ", Edge-manifold = " << (is_edge_manifold ? "true" : "false") << endl;
+            for (int i = 0; i < num_components; i++) {
+                cout << "[MESH] Component " << i << " Faces = " << component_faces[i].size() << ", Watertight = " << (component_is_watertight[i] ? "true" : "false") << ", Boundaries = " << component_boundaries[i].size() << endl;
+            }
+        }
 
         // sort faces using connected component and center
         sort(faces.begin(), faces.end(), [](const Facet* f1, const Facet* f2) { return *f1 < *f2; });
 
         // reset face index
         for (size_t i = 0; i < faces.size(); i++) { faces[i]->i = i; }
+
+        // build bvh for the whole mesh and each component
+        bvh = build_bvh(faces);
+        for (int i = 0; i < num_components; i++) {
+            component_bvhs[i] = build_bvh(component_faces[i]);
+        }
+    }
+
+    void smart_merge_components() {
+        // assume NOT merge_close_vertices when loading (clean = false) !!!
+        // using boundary edges to determine if two components are connected
+        // loop each pair of components
+        DisjointSet ds(num_components);
+        for (int i = 0; i < num_components; i++) {
+            for (int j = i + 1; j < num_components; j++) {
+                // loop boundarys
+                bool merged = false;
+                for (size_t k = 0; k < component_boundaries[i].size(); k++) {
+                    for (size_t l = 0; l < component_boundaries[j].size(); l++) {
+                        if (boundary_may_connect(component_boundaries[i][k], component_boundaries[j][l])) {
+                            ds.merge(j, i); // merge j to i (so root always has the smallest index)
+                            merged = true;
+                            break;
+                        }
+                    }
+                    if (merged) break;
+                }
+            }
+        }
+        // merge components from back to front
+        for (int i = num_components - 1; i >= 0; i--) {
+            int root = ds.find(i);
+            if (root != i) {
+                // merge component i to root
+                if (verbose) cout << "[MESH] smart merge component " << i << " to " << root << endl;
+                component_is_watertight[root] = component_is_watertight[root] && component_is_watertight[i];
+                component_boundaries[root].insert(component_boundaries[root].end(), component_boundaries[i].begin(), component_boundaries[i].end());
+                component_faces[root].insert(component_faces[root].end(), component_faces[i].begin(), component_faces[i].end());
+                for (size_t j = 0; j < component_faces[i].size(); j++) {
+                    component_faces[i][j]->ic = root;
+                }
+                component_is_watertight.erase(i);
+                component_boundaries.erase(i);
+                component_faces.erase(i);
+            }
+        }
+        // reindex component
+        vector<int> roots;
+        for (auto& [root, tmp] : component_is_watertight) {
+            roots.push_back(root);
+        }
+        num_components = roots.size();
+        map<int, bool> new_component_is_watertight;
+        map<int, vector<Facet*>> new_component_faces;
+        map<int, vector<BoundaryLoop>> new_component_boundaries;
+        for (int i = 0; i < num_components; i++) {
+            new_component_is_watertight[i] = component_is_watertight[roots[i]];
+            new_component_faces[i] = move(component_faces[roots[i]]);
+            new_component_boundaries[i] = move(component_boundaries[roots[i]]);
+        }
+        component_is_watertight = move(new_component_is_watertight);
+        component_faces = move(new_component_faces);
+        component_boundaries = move(new_component_boundaries);
+        for (int i = 0; i < num_components; i++) {
+            // reindex faces
+            for (size_t j = 0; j < component_faces[i].size(); j++) {
+                component_faces[i][j]->ic = i;
+            }
+        }
+        // rebuild bvh
+        for (int i = 0; i < num_components; i++) {
+            delete component_bvhs[i];
+            component_bvhs[i] = build_bvh(component_faces[i]);
+        }
+        if (verbose) {
+            cout << "[MESH] After smart merge:" << endl;
+            for (int i = 0; i < num_components; i++) {
+                cout << "[MESH] Component " << i << " Faces = " << component_faces[i].size() << ", Watertight = " << (component_is_watertight[i] ? "true" : "false") << ", Boundaries = " << component_boundaries[i].size() << endl;
+            }
+        }
+    }
+
+    // explode to separate connected components
+    void explode(float delta) {
+        // smart merge components first
+        smart_merge_components();
+
+        // sort components by bounding box extent
+        vector<pair<int, float>> component_extent;
+        for (int i = 0; i < num_components; i++) {
+            component_extent.push_back({i, component_bvhs[i]->bbox.extent()});
+        }
+        sort(component_extent.begin(), component_extent.end(), [](const pair<int, float>& a, const pair<int, float>& b) {
+            return a.second > b.second;
+        });
+        vector<int> component_order;
+        for (auto& [cid, extent] : component_extent) {
+            component_order.push_back(cid);
+        }
+
+        // loop components from big to small
+        for (int i = 0; i < component_order.size(); i++) {
+            if (i == 0) continue; // skip the first component
+            int cid = component_order[i];
+
+            // get the component vertices (unique)
+            set<Vertex*> component_verts;
+            for (Facet* f : component_faces[cid]) {
+                for (Vertex* v : f->vertices) {
+                    component_verts.insert(v);
+                }
+            }
+            // get the pushing direction
+            Vector3f component_center = component_bvhs[cid]->bbox.center();
+            Vector3f center = bvh->bbox.center();
+            Vector3f direction = (component_center - center).normalize();
+            
+            // decide the scale to avoid overlap with other components (always move along the direction at an interval)
+            for (int j = 0; j < i; j++) {
+                int cid_other = component_order[j];
+                while (intersect_bvh(component_bvhs[cid], component_bvhs[cid_other])) {
+                    // push away this component a little bit
+                    component_bvhs[cid]->translate(direction * delta);
+                    for (Vertex* v : component_verts) {
+                        v->x += direction.x * delta;
+                        v->y += direction.y * delta;
+                        v->z += direction.z * delta;
+                    }
+                    cout << "DEBUG: push away component " << cid << " from " << cid_other << " with direction " << direction << ", center is " << component_bvhs[cid]->bbox.center() << endl;
+                }
+            }
+        }
     }
 
     // empirically repair face orientation
@@ -466,9 +1021,10 @@ public:
         for (int i = 0; i < num_components; i++) {
             float max_dist = -1;
             Facet* furthest_face = NULL;
+            Vector3f component_center = component_bvhs[i]->bbox.center();
             for (size_t j = 0; j < component_faces[i].size(); j++) {
                 Facet* f = component_faces[i][j];
-                float dist = (f->center - component_centers[i]).norm();
+                float dist = (f->center - component_center).norm();
                 if (dist > max_dist) {
                     max_dist = dist;
                     furthest_face = f;
@@ -476,7 +1032,7 @@ public:
             }
             // see if this face's orientation is correct
             Vector3f normal = furthest_face->normal;
-            Vector3f dir = (furthest_face->center - component_centers[i]).normalize();
+            Vector3f dir = (furthest_face->center - component_center).normalize();
             float dot = normal.dot(dir);
             if (dot < 0) {
                 if (verbose) cout << "[MESH] flip face for component " << i << endl;
@@ -701,7 +1257,7 @@ public:
 
         auto merge_func = [&](HalfEdge* e) -> Facet* {
             // we will merge e->t and e->o->t into a new face
-            cout << "DEBUG: polygonize merge " << e->t->i << " and " << e->o->t->i << endl;
+            // cout << "DEBUG: polygonize merge " << e->t->i << " and " << e->o->t->i << endl;
             Facet* q = new Facet();
             
             // update index
@@ -748,7 +1304,7 @@ public:
             if (e->s->neighbors.size() == 2 &&
                 angle_between(Vector3f(*e->s, *e->p->s), Vector3f(*e->s, *e->o->n->e)) >= 175
             ) {
-                cout << "DEBUG: delete vertex " << e->s->i << endl;
+                // cout << "DEBUG: delete vertex " << e->s->i << endl;
                 // delete e->s
                 e->s->m = 2;
                 // only keep one of the two set of halfedges after vertex collapsing
@@ -778,7 +1334,7 @@ public:
             if (e->e->neighbors.size() == 2 &&
                 angle_between(Vector3f(*e->e, *e->n->e), Vector3f(*e->e, *e->o->p->s)) >= 175
             ) {
-                cout << "DEBUG: delete vertex " << e->e->i << endl;
+                // cout << "DEBUG: delete vertex " << e->e->i << endl;
                 // delete e->e
                 e->e->m = 2;
                 // only keep one of the two set of halfedges after vertex collapsing
@@ -812,7 +1368,7 @@ public:
                 q->vertices.push_back(cur->s);
                 q->half_edges.push_back(cur);
                 cur->t = q; // update face pointer in halfedge
-                cout << "DEBUG: append half edge " << *cur << endl;
+                // cout << "DEBUG: append half edge " << *cur << endl;
                 cur = cur->n;
                 if (cur == e->n) break;
             }
@@ -830,7 +1386,7 @@ public:
 
             // push new faces
             faces.push_back(q);
-            cout << "DEBUG: merged into new face " << q->i << endl;
+            // cout << "DEBUG: merged into new face " << q->i << endl;
             return q;
         };
 
@@ -1040,6 +1596,8 @@ public:
     }
 
     ~Mesh() {
+        if (bvh) delete bvh;
+        for (auto& [cid, bvh] : component_bvhs) { delete bvh; }
         for (Vertex* v : verts) { delete v; }
         for (Facet* f : faces) {
             for (HalfEdge* e : f->half_edges) { delete e; }
