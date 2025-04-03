@@ -13,6 +13,8 @@
 
 using namespace std;
 
+static float INF = 1e8;
+
 // point cloud holder for nanoflann
 template <typename T>
 struct PointCloud {
@@ -42,6 +44,7 @@ struct PointCloud {
     }
 };
 
+// unique edge key
 inline pair<int, int> edge_key(int a, int b) {
     return a < b ? make_pair(a, b) : make_pair(b, a);
 }
