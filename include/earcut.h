@@ -1,3 +1,4 @@
+// modified from https://github.com/mapbox/earcut.hpp
 #pragma once
 
 #include <algorithm>

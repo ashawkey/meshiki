@@ -15,7 +15,7 @@ using namespace std;
 
 static float INF = 1e8;
 
-// point cloud holder for nanoflann
+// helper class for nanoflann
 template <typename T>
 struct PointCloud {
     struct Point {

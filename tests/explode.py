@@ -17,5 +17,5 @@ opt = parser.parse_args()
 
 # trimesh impl
 mesh = Mesh.load(opt.mesh, verbose=opt.verbose, clean=False)
-mesh.explode(1)
+mesh.explode(0.1)
 mesh.export(opt.output)

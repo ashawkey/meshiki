@@ -48,7 +48,7 @@ struct Vector3f {
     Vector3f() {}
     Vector3f(float x, float y, float z) : x(x), y(y), z(z) {}
 
-    // extra constructor for Vector3f from Vertex (will be defined later in vertex.h)    
+    // extra constructor for Vector3f from Vertex
     Vector3f(const Vertex& v) : x(v.x), y(v.y), z(v.z) {}
     Vector3f(const Vertex& v1, const Vertex& v2) : x(v2.x - v1.x), y(v2.y - v1.y), z(v2.z - v1.z) {} // v1 --> v2
     
@@ -289,14 +289,16 @@ ostream& operator<<(ostream &os, const HalfEdge &ee) {
     return os;
 }
 
+// a BoundaryLoop is a set of half edges without opposite half edges
+// if a mesh is not watertight, it must have one or more boundary loops
 struct BoundaryLoop {
-    // a BoundaryLoop is a set of half edges without opposite half edges
-    // if a mesh is not watertight, it must have one or more boundary loops
+    
+    // the edges and points of the boundary loop (in counter-clockwise order to form a loop/polygon)
     vector<HalfEdge*> edges;
     vector<Vector3f> points;
 
     // how many other boundary loops have been connected to this one
-    // not necessarily means this loop is closed...
+    // not necessarily means this loop is closed.
     int num_connected = 0;
 
     // find out a whole boundary loop given an edge on it
@@ -318,15 +320,18 @@ struct BoundaryLoop {
             points.push_back(Vector3f(*next->s));
             cur = next;
         }
+    }
 
-        // sort points
-        sort(points.begin(), points.end());
-    }    
+    // earcut the boundary loop into new triangles
+    // vector<Facet*> earcut() {
+    //     // only involves existing Vertex, but need to create new HalfEdge and Facet
+    //     // 
+    // }
 };
 
 
 // detect if two boundary loops may connect (share some common edges)
-bool boundary_may_connect(const BoundaryLoop& a, const BoundaryLoop& b, float thresh = 1e-6) {
+bool boundary_may_connect(const BoundaryLoop& a, const BoundaryLoop& b, float thresh = 1e-8) {
     // count how many points are shared
     int count = 0;
     for (size_t i = 0; i < a.points.size(); i++) {
@@ -335,5 +340,5 @@ bool boundary_may_connect(const BoundaryLoop& a, const BoundaryLoop& b, float th
         }
     }
     float ratio = max(float(count) / a.points.size(), float(count) / b.points.size());
-    return count >= 3 || ratio >= 0.25; // very empirical! 25% of the points are shared for at least one boundary loop
+    return count >= 4 || ratio >= 0.5; // very empirical!
 }

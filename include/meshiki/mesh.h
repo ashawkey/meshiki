@@ -237,20 +237,35 @@ public:
         DisjointSet ds(num_components);
         for (int i = 0; i < num_components; i++) {
             for (int j = i + 1; j < num_components; j++) {
-                // loop boundarys
+                // merge by connecting boundarys
                 bool merged = false;
                 for (size_t k = 0; k < component_boundaries[i].size(); k++) {
                     for (size_t l = 0; l < component_boundaries[j].size(); l++) {
                         if (boundary_may_connect(component_boundaries[i][k], component_boundaries[j][l])) {
-                            ds.merge(j, i); // merge j to i (so root always has the smallest index)
                             component_boundaries[i][k].num_connected++;
                             component_boundaries[j][l].num_connected++;
+                            ds.merge(j, i); // merge j to i (so root always has the smallest index)
                             merged = true;
+                            if (verbose) cout << "[MESH] merge component " << j << " to " << i << " due to boundary connection" << endl;
                             break;
                         }
                     }
                     if (merged) break;
                 }
+                // merge too-small components.
+                // if (!merged && intersect_bvh(component_bvhs[i], component_bvhs[j], true)) {
+                //     // empirical thresholding using bbox extent
+                //     float total_extent = bvh->bbox.volume() + 1e-6;
+                //     float extent1 = component_bvhs[i]->bbox.volume() + 1e-6;
+                //     float extent2 = component_bvhs[j]->bbox.volume() + 1e-6;
+                //     float ratio_local = (extent1 <= extent2) ? extent1 / extent2 : extent2 / extent1;
+                //     float ratio_global = min(extent1, extent2) / total_extent;  
+                //     if (ratio_local < thresh_area || ratio_global < 0.01 * thresh_area) {
+                //         if (verbose) cout << "[MESH] merge component " << j << " to " << i << " due to small ratio: " << ratio_local << " and " << ratio_global << endl;
+                //         ds.merge(j, i); // merge j to i (so root always has the smallest index)
+                //         merged = true;
+                //     }
+                // }
             }
         }
 
@@ -269,7 +284,7 @@ public:
             int root = ds.find(i);
             if (root != i) {
                 // merge component i to root
-                if (verbose) cout << "[MESH] smart merge component " << i << " to " << root << endl;
+                // if (verbose) cout << "[MESH] smart merge component " << i << " to " << root << endl;
                 component_is_watertight[root] = component_is_watertight[root] && component_is_watertight[i];
                 component_boundaries[root].insert(component_boundaries[root].end(), component_boundaries[i].begin(), component_boundaries[i].end());
                 component_faces[root].insert(component_faces[root].end(), component_faces[i].begin(), component_faces[i].end());
@@ -291,6 +306,7 @@ public:
         map<int, vector<Facet*>> new_component_faces;
         map<int, vector<BoundaryLoop>> new_component_boundaries;
         for (int i = 0; i < num_components; i++) {
+            if (verbose) cout << "[MESH] reindex component " << roots[i] << " to " << i << endl;
             new_component_is_watertight[i] = component_is_watertight[roots[i]];
             new_component_faces[i] = move(component_faces[roots[i]]);
             new_component_boundaries[i] = move(component_boundaries[roots[i]]);
@@ -322,22 +338,34 @@ public:
         // smart merge components first
         smart_group_components();
 
-        // sort components by bounding box extent
-        vector<pair<int, float>> component_extent;
-        for (int i = 0; i < num_components; i++) {
-            component_extent.push_back({i, component_bvhs[i]->bbox.extent()});
+        // decide which component is the center 
+        int center_cid = 0;
+        Vector3f center = bvh->bbox.center();
+        float min_dist = (component_bvhs[0]->bbox.center() - center).norm();
+        for (int i = 1; i < num_components; i++) {
+            float dist = (component_bvhs[i]->bbox.center() - center).norm();
+            if (dist < min_dist) {
+                min_dist = dist;
+                center_cid = i;
+            }
         }
-        sort(component_extent.begin(), component_extent.end(), [](const pair<int, float>& a, const pair<int, float>& b) {
-            return a.second > b.second;
+
+        // sort components by distance to the center object
+        center = component_bvhs[center_cid]->bbox.center();
+        vector<pair<int, float>> component_sorter;
+        for (int i = 0; i < num_components; i++) {
+            component_sorter.push_back({i, (component_bvhs[i]->bbox.center() - center).norm()});
+        }
+        sort(component_sorter.begin(), component_sorter.end(), [](const pair<int, float>& a, const pair<int, float>& b) {
+            return a.second < b.second;
         });
         vector<int> component_order;
-        for (auto& [cid, extent] : component_extent) {
+        for (auto& [cid, extent] : component_sorter) {
             component_order.push_back(cid);
         }
 
-        // loop components from big to small
-        for (int i = 0; i < component_order.size(); i++) {
-            if (i == 0) continue; // skip the first component
+        // loop components from big to small (skip the first one)
+        for (int i = 1; i < component_order.size(); i++) {
             int cid = component_order[i];
 
             // get the component vertices (unique)
@@ -349,9 +377,11 @@ public:
             }
             // get the pushing direction
             Vector3f component_center = component_bvhs[cid]->bbox.center();
-            Vector3f center = bvh->bbox.center();
-            Vector3f direction = (component_center - center).normalize();
-            
+            Vector3f direction = (component_center - center);
+            float dist = direction.norm();
+            if (dist < 1e-6) continue;
+            else direction = direction / dist;
+
             // decide the scale to avoid overlap with other components (always move along the direction at an interval)
             for (int j = 0; j < i; j++) {
                 int cid_other = component_order[j];
@@ -364,6 +394,13 @@ public:
                         v->z += direction.z * delta;
                     }
                     cout << "DEBUG: push away component " << cid << " from " << cid_other << " with direction " << direction << ", center is " << component_bvhs[cid]->bbox.center() << endl;
+                }
+                // push once more to have some interval
+                component_bvhs[cid]->translate(direction * delta * 0.1);
+                for (Vertex* v : component_verts) {
+                    v->x += direction.x * delta * 0.1;
+                    v->y += direction.y * delta * 0.1;
+                    v->z += direction.z * delta * 0.1;
                 }
             }
         }
