@@ -159,7 +159,6 @@ class Mesh:
         # copy back to self
         self.vertices, self.faces = self.impl.export_mesh()
         self.vertices = np.asarray(self.vertices)
-        import kiui; kiui.lo(self.vertices)
     
     @staticmethod
     def load(path, clean=True, bound=0.99, verbose=False):
@@ -215,4 +214,19 @@ class Mesh:
         self.sync_impl()
         
     def export(self, path):
+        # assume synced with impl
         write_mesh(path, self.vertices, self.faces)
+    
+    def smart_group_components(self):
+        self.impl.smart_group_components()
+        # this only changes the component of impl, we don't expose component in python
+    
+    def export_components_as_trimesh_scene(self):
+        # we have to use trimesh scene for components
+        components = self.impl.export_components()
+        scene = trimesh.Scene()
+        for component in components:
+            verts, faces = component
+            mesh = trimesh.Trimesh(verts, faces)
+            scene.add_geometry(mesh)
+        return scene

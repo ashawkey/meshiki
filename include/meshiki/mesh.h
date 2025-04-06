@@ -255,13 +255,12 @@ public:
                 // merge too-small components.
                 // if (!merged && intersect_bvh(component_bvhs[i], component_bvhs[j], true)) {
                 //     // empirical thresholding using bbox extent
-                //     float total_extent = bvh->bbox.volume() + 1e-6;
-                //     float extent1 = component_bvhs[i]->bbox.volume() + 1e-6;
-                //     float extent2 = component_bvhs[j]->bbox.volume() + 1e-6;
-                //     float ratio_local = (extent1 <= extent2) ? extent1 / extent2 : extent2 / extent1;
-                //     float ratio_global = min(extent1, extent2) / total_extent;  
-                //     if (ratio_local < thresh_area || ratio_global < 0.01 * thresh_area) {
-                //         if (verbose) cout << "[MESH] merge component " << j << " to " << i << " due to small ratio: " << ratio_local << " and " << ratio_global << endl;
+                //     float total = bvh->bbox.size().max_component() + 1e-6;
+                //     float ri = component_bvhs[i]->bbox.size().max_component() + 1e-6;
+                //     float rj = component_bvhs[j]->bbox.size().max_component() + 1e-6;
+                //     float ratio_global = min(ri, rj) / total;  
+                //     if (ratio_global < 0.05) {
+                //         if (verbose) cout << "[MESH] merge component " << j << " to " << i << " due to small ratio: " << ratio_global << endl;
                 //         ds.merge(j, i); // merge j to i (so root always has the smallest index)
                 //         merged = true;
                 //     }
@@ -269,7 +268,8 @@ public:
             }
         }
 
-        // check still-open (num_connected == 0) boundaries, try to close them by adding a lid, or merge to intersecting component
+        // check still-open (num_connected == 0) boundaries
+        // TODO: try to close them by adding a lid, or merge to intersecting component
         for (int i = 0; i < num_components; i++) {
             for (size_t j = 0; j < component_boundaries[i].size(); j++) {
                 if (component_boundaries[i][j].num_connected == 0) {
@@ -336,7 +336,7 @@ public:
     // explode to separate connected components
     void explode(float delta) {
         // smart merge components first
-        smart_group_components();
+        // smart_group_components();
 
         // decide which component is the center 
         int center_cid = 0;
@@ -984,6 +984,45 @@ public:
             faces_out.push_back(face);
         }
         return make_tuple(verts_out, faces_out);
+    }
+
+    vector<tuple<vector<vector<float>>, vector<vector<int>>>> export_components() {
+        vector<tuple<vector<vector<float>>, vector<vector<int>>>> components;
+        // export each component as a separate mesh
+        for (int i = 0; i < num_components; i++) {
+            // we need loop twice to map global vertice indices to submesh indices
+            map<int, int> vert_map;
+            int vert_idx = 0;
+            for (int j = 0; j < component_faces[i].size(); j++) {
+                Facet* f = component_faces[i][j];
+                for (Vertex* v : f->vertices) {
+                    if (vert_map.find(v->i) == vert_map.end()) {
+                        vert_map[v->i] = vert_idx++;
+                    }
+                }
+            }
+            // inverted map
+            map<int, int> vert_map_inv;
+            for (auto& [idx, sub_idx] : vert_map) {
+                vert_map_inv[sub_idx] = idx;
+            }
+            // build the submesh
+            vector<vector<float>> verts_out;
+            vector<vector<int>> faces_out;
+            for (int j = 0; j < vert_map_inv.size(); j++) {
+                verts_out.push_back({verts[vert_map_inv[j]]->x, verts[vert_map_inv[j]]->y, verts[vert_map_inv[j]]->z});
+            }
+            for (int j = 0; j < component_faces[i].size(); j++) {
+                Facet* f = component_faces[i][j];
+                vector<int> face;
+                for (Vertex* v : f->vertices) {
+                    face.push_back(vert_map[v->i]);
+                }
+                faces_out.push_back(face);
+            }
+            components.push_back(make_tuple(verts_out, faces_out));
+        }
+        return components;
     }
 
     ~Mesh() {

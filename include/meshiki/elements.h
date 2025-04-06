@@ -102,6 +102,12 @@ struct Vector3f {
     float norm() const {
         return sqrt(x * x + y * y + z * z);
     }
+    float max_component() const {
+        return max(x, max(y, z));
+    }
+    float min_component() const {
+        return min(x, min(y, z));
+    }
     Vector3f normalize() const {
         float n = norm() + 1e-8;
         return Vector3f(x / n, y / n, z / n);

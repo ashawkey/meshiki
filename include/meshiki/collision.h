@@ -60,7 +60,7 @@ struct BoundingBox {
         mx = max(mx, other.mx);
     }
 
-    bool overlap(const BoundingBox& other, float thresh = 0) const {
+    bool overlap(const BoundingBox& other, float thresh = 0.01) const {
         // thresh can adjust the overlap tolerance, a positive thresh can be used for coarse contact detection
         return (mn.x - other.mx.x) <= thresh && (other.mn.x - mx.x) <= thresh &&
                (mn.y - other.mx.y) <= thresh && (other.mn.y - mx.y) <= thresh &&
