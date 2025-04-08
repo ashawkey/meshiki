@@ -18,8 +18,6 @@ parser.add_argument('--force_cc', action='store_true', help='force to use connec
 parser.add_argument('--workspace', type=str, default='output', help='path to the output folder')
 parser.add_argument('--max_components', type=int, default=100, help='maximum number of components to explode')
 parser.add_argument('--min_dist', type=float, default=2 * 2 / 512, help='minimum distance between two objects')
-parser.add_argument('--max_vol', type=float, default=1e-5, help='maximum volume of a mesh to be merged')
-parser.add_argument('--max_extent', type=float, default=0.1, help='maximum extent of a mesh to be merged')
 opt = parser.parse_args()
 
 
@@ -111,17 +109,34 @@ class NamedDisjointSet:
         return groups
 
 
-def is_single_layer_plane(mesh: trimesh.Trimesh, coplane_thresh: float = 0.01):
+def is_single_layer_plane(mesh: trimesh.Trimesh, coplane_thresh: float = 1):
     # check if a mesh is just a single-layer plane
-    # all face normals should be the same
+    if mesh.is_watertight: return False
     face_normals = mesh.face_normals
     diff = np.linalg.norm(np.abs(face_normals) - np.abs(face_normals[0]))
     return diff.max() < coplane_thresh
 
+def calc_intersection_union(bounds1, bounds2):
+    # bounds: [2, 3]
+    bmin1, bmax1 = bounds1[0], bounds1[1]
+    bmin2, bmax2 = bounds2[0], bounds2[1]
+    # intersection
+    bmin = np.maximum(bmin1, bmin2)
+    bmax = np.minimum(bmax1, bmax2)
+    if np.any(bmin >= bmax):
+        intersection = 0
+    else:
+        intersection = np.prod(bmax - bmin)
+    # union
+    vol1 = np.prod(bmax1 - bmin1)
+    vol2 = np.prod(bmax2 - bmin2)
+    union = vol1 + vol2 - intersection
+    return intersection, union
 
 def is_coplanar_and_convex(vertices, coplanar_thresh: float = 1):
     # vertices: [N, 3], assume ordered to form a coplanar polygon
     # note the last vertex is the same as the first vertex, i.e. ABCA
+    # we are actually not requiring perfect coplanarity, the thresh of 1 means 60 degree tolerance...
     
     # Need at least 3 vertices to form a polygon
     if len(vertices) < 3:
@@ -150,10 +165,10 @@ def is_coplanar_and_convex(vertices, coplanar_thresh: float = 1):
     
     # Find basis vectors for the 2D plane
     # First basis vector can be the normalized vector from points[0] to points[1]
-    basis1 = v1 / np.linalg.norm(v1)
+    basis1 = v1 / (np.linalg.norm(v1) + 1e-12)
     # Second basis vector is perpendicular to both normal and basis1
     basis2 = np.cross(normal, basis1)
-    basis2 = basis2 / np.linalg.norm(basis2)
+    basis2 = basis2 / (np.linalg.norm(basis2) + 1e-12)
     
     # Project all points onto the 2D plane
     points_2d = np.zeros((n_points, 2))
@@ -308,7 +323,8 @@ def stitch_nonwatertight_mesh(mesh: trimesh.Trimesh, eps: float = 1e-2):
     return nonwatertight
 
 
-def smart_grouping_and_stitching(meshes: dict, max_vol: float, max_extent: float):
+
+def smart_stitching_grouping(meshes: dict):
     # meshes: {name: trimesh.Trimesh, ...}
 
     # stitch open boundaries to make each mesh watertight
@@ -322,36 +338,73 @@ def smart_grouping_and_stitching(meshes: dict, max_vol: float, max_extent: float
     for name, mesh in meshes.items():
         manager.add_object(name, mesh)
 
-    # find all colliding pairs
     is_collide, collide_pairs = manager.in_collision_internal(return_names=True)
     # print(f'[INFO] num_collide = {len(collide_pairs)}, {collide_pairs}')
 
     if not is_collide:
         return meshes
 
+    # pre-calculate some stat for each mesh
+    name_to_stat = {}
+    total_volume = 0
+    max_extent = 0
+    num_submeshes = 0
+    num_meshes = len(meshes)
+    for name, mesh in meshes.items():
+        name_to_stat[name] = {}
+        submeshes = mesh.split()
+        name_to_stat[name]['volume'] = []
+        name_to_stat[name]['extent'] = []
+        num_submeshes += len(submeshes)
+        for submesh in submeshes:
+            if submesh.is_watertight: 
+                name_to_stat[name]['volume'].append(submesh.volume)
+                total_volume += name_to_stat[name]['volume'][-1]
+            name_to_stat[name]['extent'].append(np.max(submesh.extents))
+            max_extent = max(max_extent, name_to_stat[name]['extent'][-1])
+        name_to_stat[name]['volume'] = np.mean(name_to_stat[name]['volume']) if len(name_to_stat[name]['volume']) > 0 else np.inf
+        name_to_stat[name]['extent'] = np.max(name_to_stat[name]['extent']) if len(name_to_stat[name]['extent']) > 0 else np.inf
+    
     # use a disjoint set to record grouping
     ds = NamedDisjointSet(list(meshes.keys()))
 
-    # pre-calculate the average volume of each mesh
-    name_to_stat = {}
-    for name, mesh in meshes.items():
-        name_to_stat[name] = {}
-        submeshes = mesh.split(only_watertight=True)
-        if len(submeshes) == 0: # only non-watertight mesh...
-            name_to_stat[name]['volume'] = np.inf
-            name_to_stat[name]['extent'] = np.inf
-        else:
-            name_to_stat[name]['volume'] = np.mean([submesh.volume for submesh in submeshes])
-            name_to_stat[name]['extent'] = np.mean([np.max(submesh.extents) for submesh in submeshes])
+    # decide the merging thresh adaptively (based on the number of meshes, average volume and extent)
+    # very empirical...
+    if num_meshes <= 16:
+        tol_volume = 0.05 * total_volume
+        tol_extent = 0.05 * max_extent
+    else:
+        tol_volume = 0.1 * total_volume
+        tol_extent = 0.1 * max_extent
 
     # loop each pair, determine if they should be grouped together
     for name1, name2 in collide_pairs:
 
-        # too small component
-        if (name_to_stat[name1]['volume'] < max_vol and name_to_stat[name1]['extent'] < max_extent) or \
-           (name_to_stat[name2]['volume'] < max_vol and name_to_stat[name2]['extent'] < max_extent):
-            print(f'[INFO] merge {name1} and {name2} because of small volume: {name_to_stat[name1]} and {name_to_stat[name2]}')
+        if ds.find(name1) == ds.find(name2):
+            continue
+
+        # single-layer plane should be merged
+        if is_single_layer_plane(meshes[name1]) or is_single_layer_plane(meshes[name2]):
+            print(f'[INFO] merge {name1} and {name2} because of single-layer plane')
             ds.merge(name1, name2)
+            continue
+
+        # too small component
+        if (name_to_stat[name1]['volume'] < tol_volume and name_to_stat[name1]['extent'] < tol_extent) or \
+           (name_to_stat[name2]['volume'] < tol_volume and name_to_stat[name2]['extent'] < tol_extent):
+            print(f'[INFO] merge {name1} and {name2} because of small volume')
+            ds.merge(name1, name2)
+            continue
+
+        # overlaps a lot should be merged (just use bounding box IoU)
+        bounds1 = meshes[name1].bounds # [2, 3]
+        bounds2 = meshes[name2].bounds # [2, 3]
+        vol_intersect, vol_union = calc_intersection_union(bounds1, bounds2)
+        vol_iou = vol_intersect / vol_union
+        if vol_iou > 0.5:
+            print(f'[INFO] merge {name1} and {name2} because of large IoU')
+            ds.merge(name1, name2)
+            continue
 
         # still nonwatertight meshes should be merged [this is too aggressive, disabled]
         # if name_to_nonwatertight[name1] or name_to_nonwatertight[name2]:
@@ -426,7 +479,7 @@ def run(path):
             meshes[name] = mesh
     
     ### smart grouping to avoid too many single-layer surface or too small objects
-    meshes = smart_grouping_and_stitching(meshes, max_vol=opt.max_vol, max_extent=opt.max_extent)
+    meshes = smart_stitching_grouping(meshes)
 
     ### explode
     # sort objects by distance to center
