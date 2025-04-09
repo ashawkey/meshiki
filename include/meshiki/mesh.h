@@ -273,7 +273,6 @@ public:
         for (int i = 0; i < num_components; i++) {
             for (size_t j = 0; j < component_boundaries[i].size(); j++) {
                 if (component_boundaries[i][j].num_connected == 0) {
-                    // create a lid by cutting this loop into triangles
                     if (verbose) cout << "[MESH] found still open boundary: component " << i << " boundary " << j << endl;
                 }
             }
