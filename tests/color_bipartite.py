@@ -367,6 +367,13 @@ def run(path):
         mesh = Mesh(mesh.vertices, mesh.faces, verbose=opt.verbose, clean=False)
         mesh.smart_group_components()
         scene = mesh.export_components_as_trimesh_scene()
+
+        # use trimesh
+        # meshes = mesh.split(only_watertight=False)
+        # # print(meshes)
+        # scene = trimesh.Scene()
+        # for mesh in meshes:
+        #     scene.add_geometry(mesh)
         print(f'[INFO] mesh: {len(scene.geometry)} components')
 
     ### we don't use the scene graph API, something is wrong and I cannot find out.
