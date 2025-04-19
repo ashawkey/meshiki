@@ -15,6 +15,9 @@ parser = argparse.ArgumentParser()
 parser.add_argument('test_path', type=str, help='path to the mesh file or folder')
 parser.add_argument('--verbose', action='store_true', help='print verbose output')
 parser.add_argument('--force_cc', action='store_true', help='force to use connected components and ignore glb groups')
+parser.add_argument('--no_smart_group', action='store_true', help='do not perform smart grouping')
+parser.add_argument('--no_merge_odd_loops', action='store_true', help='do not merge odd loops')
+parser.add_argument('--no_dilate', action='store_true', help='do not dilate the mesh')
 parser.add_argument('--workspace', type=str, default='output', help='path to the output folder')
 opt = parser.parse_args()
 
@@ -351,6 +354,110 @@ def smart_grouping(meshes: dict):
     print(f'[INFO] after grouping, num_meshes = {len(meshes)}')
     return meshes
 
+def merge_odd_loops(meshes: dict, graph: dict, penetration_depths: dict):
+    # meshes: {name: trimesh.Trimesh, ...}
+    # graph: {name: [neighbor, ...], ...}
+    # penetration_depths: {(name1, name2): depth, ...}
+    
+    # find out odd loops in the graph, and try to merge vertex pair of largest penetration depth to make them even loops
+    all_loops = []
+    visited = set()
+
+    def dfs(node, parent, start_node, path):
+        visited.add(node)
+        path.append(node)
+        for neighbor in graph[node]:
+            if neighbor == parent:
+                continue
+            if neighbor == start_node and len(path) >= 3:
+                all_loops.append(path.copy())
+            elif neighbor not in visited:
+                dfs(neighbor, node, start_node, path)
+        path.pop()
+        visited.remove(node)
+
+    for node in graph:
+        dfs(node, None, node, [])
+        visited.add(node)
+    
+    unique_loops = []
+    loop_keys = set()
+    for loop in all_loops:
+        loop_key = frozenset(loop)
+        if len(loop) > 2 and loop_key not in loop_keys:
+            loop_keys.add(loop_key)
+            unique_loops.append(loop)
+            # print(f'[INFO] find loop: {loop}')
+    
+    # convert loops to list of edges
+    loop_edges = []
+    for loop in unique_loops:
+        edges = set()
+        for i in range(len(loop)):
+            j = (i + 1) % len(loop)
+            edges.add(tuple(sorted([loop[i], loop[j]])))
+        loop_edges.append(edges)
+    
+    # merge vertex pair of largest penetration depth to make them even loops
+    ds = NamedDisjointSet(list(meshes.keys()))
+
+    while True: # have to loop multiple times to make sure there is no odd loop...
+
+        for i in range(len(loop_edges)):
+            edges = loop_edges[i]
+            if len(edges) % 2 == 0: # even
+                continue
+
+            # find the largest penetration depth
+            max_penetration_depth = 0
+            max_edge = None
+            for edge in edges:
+                if penetration_depths[edge] > max_penetration_depth:
+                    max_penetration_depth = penetration_depths[edge]
+                    max_edge = edge
+
+            # remove this edge from other loops if it exists (this will affect other loops, even make already even loops become odd)
+            for j in range(len(loop_edges)):
+                if max_edge in loop_edges[j]:
+                    loop_edges[j].remove(max_edge)
+            
+            # merge the vertex pair of largest penetration depth
+            # print(f'[INFO] merge {max_edge[0]} and {max_edge[1]}')
+            ds.merge(max_edge[0], max_edge[1])
+        
+        has_odd_loop = False
+        for i in range(len(loop_edges)):
+            edges = loop_edges[i]
+            if len(edges) % 2 == 1:
+                has_odd_loop = True
+                break
+        
+        if not has_odd_loop:
+            break
+
+    # merge groups
+    graph_new = graph.copy()
+    groups = ds.get_groups()
+    for group in groups.values():
+        if len(group) <= 1:
+            continue
+        # print(f'[INFO] merge group: {group}')
+        new_name = '_'.join(group)
+        new_mesh = trimesh.util.concatenate(list(meshes[name] for name in group))
+        meshes[new_name] = new_mesh
+        graph_new[new_name] = set()
+        for name in group:
+            del meshes[name]
+            for neighbor in graph[name]:
+                if neighbor not in group:
+                    graph_new[new_name].add(neighbor)
+                    graph_new[neighbor].remove(name)
+                    graph_new[neighbor].add(new_name)
+            del graph_new[name]
+    
+    print(f'[INFO] after merging odd loops, num_meshes = {len(meshes)}')
+    return meshes, graph_new
+
 
 def run(path):
 
@@ -411,9 +518,41 @@ def run(path):
         stitch_nonwatertight_mesh(mesh)
 
     ### smart grouping to avoid too many single-layer surface or too small objects
-    meshes = smart_grouping(meshes)
+    if not opt.no_smart_group:
+        meshes = smart_grouping(meshes)
 
     ### coloring
+    # build an undirected collision graph
+    manager = trimesh.collision.CollisionManager()
+    for name, mesh in meshes.items():
+        # scale up the mesh a little bit to take count of the collision margin
+        mesh_dilated = mesh.copy()
+        if not opt.no_dilate:
+            center = mesh_dilated.centroid
+            vertices = mesh_dilated.vertices - center
+            max_radius = np.max(np.linalg.norm(vertices, axis=-1))
+            scale = (max_radius + 1 / 512) / max_radius
+            # print(f'[INFO] dilate {name} by {scale}')
+            mesh_dilated.vertices = vertices * scale + center
+        manager.add_object(name, mesh_dilated)
+    
+    is_collide, collide_pairs, collide_data = manager.in_collision_internal(return_names=True, return_data=True)
+
+    graph = {name: set() for name in meshes.keys()}
+    penetration_depths = {}
+    
+    for data in collide_data:
+        name1, name2 = list(data.names)
+        graph[name1].add(name2)
+        graph[name2].add(name1)
+        name_key = tuple(sorted([name1, name2]))
+        penetration_depth = data.depth
+        penetration_depths[name_key] = penetration_depth
+    
+    # merge odd loops
+    if not opt.no_merge_odd_loops:
+        meshes, graph = merge_odd_loops(meshes, graph, penetration_depths)
+    
     # sort objects by distance to center
     name_to_centers = {}
     for name, mesh in meshes.items():
@@ -426,18 +565,6 @@ def run(path):
         dist = np.linalg.norm(mesh_center)
         name_with_dist.append((name, dist))
     name_with_dist.sort(key=lambda x: x[1])
-
-    # build an undirected collision graph
-    manager = trimesh.collision.CollisionManager()
-    for name, mesh in meshes.items():
-        manager.add_object(name, mesh)
-    
-    is_collide, collide_pairs = manager.in_collision_internal(return_names=True)
-
-    graph = {name: [] for name in meshes.keys()}
-    for name1, name2 in collide_pairs:
-        graph[name1].append(name2)
-        graph[name2].append(name1)
     
     # we will start graph coloring from center to border
     name_to_color = {}
@@ -454,7 +581,7 @@ def run(path):
                         queue.append(neighbor)
                     else:
                         if name_to_color[neighbor] == name_to_color[name]:
-                            print(f'[WARN] {name} and {neighbor} have the same color, this graph cannot be colored with only two colors')
+                            print(f'[WARN] {name} and {neighbor} have the same color!')
 
     # get the two parts
     mesh_color0 = []
