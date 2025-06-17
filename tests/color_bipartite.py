@@ -16,9 +16,11 @@ parser.add_argument('test_path', type=str, help='path to the mesh file or folder
 parser.add_argument('--verbose', action='store_true', help='print verbose output')
 parser.add_argument('--force_cc', action='store_true', help='force to use connected components and ignore glb groups')
 parser.add_argument('--no_smart_group', action='store_true', help='do not perform smart grouping')
+parser.add_argument('--no_stitch', action='store_true', help='do not stitch open boundaries')
 parser.add_argument('--no_merge_odd_loops', action='store_true', help='do not merge odd loops')
 parser.add_argument('--no_dilate', action='store_true', help='do not dilate the mesh')
-parser.add_argument('--workspace', type=str, default='output', help='path to the output folder')
+parser.add_argument('--dilate_size', type=float, default=2/512, help='dilate size')
+parser.add_argument('--workspace', type=str, default='output_bipartite', help='path to the output folder')
 opt = parser.parse_args()
 
 
@@ -347,6 +349,12 @@ def smart_grouping(meshes: dict):
         # print(f'[INFO] merge group: {group}')
         new_name = '_'.join(group)
         new_mesh = trimesh.util.concatenate(list(meshes[name] for name in group))
+        
+        # merge close vertices, and clean up
+        new_mesh.merge_vertices(merge_tex=True, merge_norm=True)
+        new_mesh.update_faces(new_mesh.unique_faces() & new_mesh.nondegenerate_faces())
+        new_mesh.fix_normals()
+
         meshes[new_name] = new_mesh
         for name in group:
             del meshes[name]
@@ -460,6 +468,7 @@ def merge_odd_loops(meshes: dict, graph: dict, penetration_depths: dict):
 
 
 def run(path):
+    print(f'[INFO] processing {path}')
 
     mesh = trimesh.load(path)
 
@@ -513,13 +522,14 @@ def run(path):
             mesh.fix_normals()
             meshes[name] = mesh
     
-    ### stitch open boundaries to make each mesh watertight
-    for name, mesh in meshes.items():
-        stitch_nonwatertight_mesh(mesh)
-
     ### smart grouping to avoid too many single-layer surface or too small objects
     if not opt.no_smart_group:
         meshes = smart_grouping(meshes)
+
+    ### stitch open boundaries to make each mesh watertight
+    if not opt.no_stitch:
+        for name, mesh in meshes.items():
+            stitch_nonwatertight_mesh(mesh)
 
     ### coloring
     # build an undirected collision graph
@@ -531,7 +541,7 @@ def run(path):
             center = mesh_dilated.centroid
             vertices = mesh_dilated.vertices - center
             max_radius = np.max(np.linalg.norm(vertices, axis=-1))
-            scale = (max_radius + 1 / 512) / max_radius
+            scale = (max_radius + opt.dilate_size) / max_radius
             # print(f'[INFO] dilate {name} by {scale}')
             mesh_dilated.vertices = vertices * scale + center
         manager.add_object(name, mesh_dilated)
@@ -551,7 +561,15 @@ def run(path):
     
     # merge odd loops
     if not opt.no_merge_odd_loops:
-        meshes, graph = merge_odd_loops(meshes, graph, penetration_depths)
+        # if the graph is too complex, we will skip since it takes forever
+        num_edges = sum(len(edges) for edges in graph.values())
+        if num_edges > 100:
+            print(f'[WARN] skip {path} because of too many edges: {num_edges}')
+        else:
+            meshes, graph = merge_odd_loops(meshes, graph, penetration_depths)
+    
+    if opt.verbose:
+        print(graph)
     
     # sort objects by distance to center
     name_to_centers = {}
@@ -569,15 +587,19 @@ def run(path):
     # we will start graph coloring from center to border
     name_to_color = {}
     queue = []
+    initial_color = 0
     for name, dist in name_with_dist:
         if name not in name_to_color:
-            name_to_color[name] = 0
+            name_to_color[name] = initial_color
+            initial_color = 1 - initial_color
             queue.append(name)
             while len(queue) > 0:
                 name = queue.pop(0)
                 for neighbor in graph[name]:
                     if neighbor not in name_to_color:
                         name_to_color[neighbor] = 1 - name_to_color[name]
+                        if opt.verbose:
+                            print(f'[INFO] color {neighbor} with {name_to_color[neighbor]}')
                         queue.append(neighbor)
                     else:
                         if name_to_color[neighbor] == name_to_color[name]:
