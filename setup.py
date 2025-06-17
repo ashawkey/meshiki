@@ -1,8 +1,15 @@
 import os
+import platform
 from setuptools import setup, find_packages
 from pybind11.setup_helpers import Pybind11Extension, build_ext
 
 _src_path = os.path.dirname(os.path.abspath(__file__))
+
+# Windows-specific compiler flags
+extra_compile_args = ["-std=c++17", "-O3"]
+
+if platform.system() == "Windows":
+    extra_compile_args = ["/std:c++17", "/O2"]
 
 setup(
     name="meshiki",
@@ -20,9 +27,9 @@ setup(
     ext_modules=[
         Pybind11Extension(
             name="_meshiki",
-            sources=["src/bindings.cpp"], # just cpp files
+            sources=["src/bindings.cpp"],  # just cpp files
             include_dirs=[os.path.join(_src_path, "include")],
-            extra_compile_args=["-std=c++17", "-O3"],
+            extra_compile_args=extra_compile_args,
         ),
     ],
     cmdclass={"build_ext": build_ext},

@@ -8,6 +8,8 @@
 
 using namespace std;
 
+#define M_PI 3.14159265358979323846f
+
 // forward declarations
 struct Facet;
 struct HalfEdge;
