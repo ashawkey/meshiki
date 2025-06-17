@@ -13,7 +13,7 @@ if platform.system() == "Windows":
 
 setup(
     name="meshiki",
-    version="0.0.5",
+    version="0.0.6",
     description="Unusual mesh processing tools",
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
